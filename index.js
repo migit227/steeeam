@@ -30,10 +30,10 @@ app.use(passport.session());
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((obj, done) => done(null, obj));
 
-// Configure Steam strategy
+// Configure Steam strategy with hardcoded production URLs (required for Vercel)
 passport.use(new SteamStrategy({
-  returnURL: process.env.STEAM_RETURN_URL || 'https://stimprivyazka.vercel.app/auth/steam/return',
-  realm: process.env.STEAM_REALM || 'https://stimprivyazka.vercel.app/',
+  returnURL: 'https://stimprivyazka.vercel.app/auth/steam/return',
+  realm: 'https://stimprivyazka.vercel.app/',
   apiKey: process.env.STEAM_API_KEY
 }, (identifier, profile, done) => {
   profile.identifier = identifier;
