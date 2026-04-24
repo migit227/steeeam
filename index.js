@@ -3,11 +3,13 @@ const fetch = require('node-fetch');
 const cors = require('cors');
 const passport = require('passport');
 const SteamStrategy = require('passport-steam').Strategy;
+const cookieParser = require('cookie-parser');
 
 const app = express();
 const session = require('express-session');
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
+app.use(cookieParser());
 // trust proxy when running behind Vercel / other proxies so secure cookies work
 if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
 // session for OpenID linking
@@ -55,16 +57,23 @@ app.post('/initLink', async (req, res) => {
 });
 
 // Passport routes for Steam (using passport-steam)
-app.get('/auth/steam', passport.authenticate('steam'));
+app.get('/auth/steam', (req, res, next) => {
+  // accept token in query and set as cookie for callback retrieval
+  const token = req.query && (req.query.token || req.query.idToken);
+  if (token && req && res && res.cookie) {
+    res.cookie('firebaseToken', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax' });
+  }
+  return passport.authenticate('steam')(req, res, next);
+});
 
 app.get('/auth/steam/return',
   passport.authenticate('steam', { failureRedirect: '/' }),
   async (req, res) => {
-    try {
+  try {
       // req.user contains steam profile
       const steamProfile = req.user;
-      // Get firebase token from session (initLink should have set it)
-      const idToken = req.session && (req.session.firebaseToken || req.session.idToken);
+      // Get firebase token from cookies (set in /auth/steam) or session
+      const idToken = (req.cookies && req.cookies.firebaseToken) || (req.session && (req.session.firebaseToken || req.session.idToken));
       if (!idToken) {
         console.warn('No firebase token in session');
         return res.send('<html><body>Missing firebase token. Close this window.</body></html>');

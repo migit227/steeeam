@@ -11,5 +11,6 @@
     "node-fetch": "^2.6.7",
     "passport": "^0.7.0",
     "passport-steam": "^1.0.18"
+    ,"cookie-parser": "^1.4.6"
   }
 }
