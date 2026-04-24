@@ -42,6 +42,19 @@ passport.use(new SteamStrategy({
   return done(null, profile);
 }));
 
+// Initialize Firebase Admin and STEAM_KEY before routes so they are available
+const STEAM_KEY = process.env.STEAM_API_KEY;
+if (!STEAM_KEY) console.warn('Warning: STEAM_API_KEY is not set in environment. Proxy will return errors for Steam API calls.');
+
+let admin;
+try {
+  admin = require('firebase-admin');
+  if (!admin.apps.length && process.env.FIREBASE_SERVICE_ACCOUNT) {
+    const sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    admin.initializeApp({ credential: admin.credential.cert(sa) });
+  }
+} catch (e) { /* not configured */ }
+
 // Store incoming Firebase ID token in session to associate with upcoming OpenID flow
 app.post('/initLink', async (req, res) => {
   try {
@@ -69,29 +82,58 @@ app.get('/auth/steam', (req, res, next) => {
 app.get('/auth/steam/return',
   passport.authenticate('steam', { failureRedirect: '/' }),
   async (req, res) => {
-  try {
+    // Wrap the whole callback in try/catch to avoid server crashes
+    try {
       // req.user contains steam profile
-      const steamProfile = req.user;
+      const steamProfile = req.user || {};
       // Get firebase token from cookies (set in /auth/steam) or session
       const idToken = (req.cookies && req.cookies.firebaseToken) || (req.session && (req.session.firebaseToken || req.session.idToken));
       if (!idToken) {
-        console.warn('No firebase token in session');
+        console.warn('No firebase token in session or cookie');
         return res.send('<html><body>Missing firebase token. Close this window.</body></html>');
       }
+
       // verify firebase token to get uid
-      if (!admin) return res.status(500).send('Server not configured');
-      const decoded = await admin.auth().verifyIdToken(idToken);
+      if (!admin) {
+        console.error('Firebase admin not configured');
+        return res.status(500).send('Server not configured');
+      }
+      let decoded;
+      try {
+        decoded = await admin.auth().verifyIdToken(idToken);
+      } catch (e) {
+        console.error('Invalid firebase token', e);
+        return res.status(400).send('Invalid firebase token');
+      }
       const uid = decoded.uid;
 
-      // fetch additional Steam data (owned games, summaries)
-      const steamidMatch = (steamProfile && steamProfile._json && steamProfile._json.steamid) || steamProfile.identifier && steamProfile.identifier.match(/(\d+)$/)[1];
-      const steamid = steamidMatch;
-      const psR = await fetch(`https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key=${STEAM_KEY}&steamids=${encodeURIComponent(steamid)}`);
-      const ps = await psR.json();
-      const player = ps.response.players && ps.response.players[0];
-      const ogR = await fetch(`https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?key=${STEAM_KEY}&steamid=${encodeURIComponent(steamid)}&include_appinfo=1&include_played_free_games=1`);
-      const og = await ogR.json();
-      const gamesArr = (og.response && og.response.games) || [];
+      // fetch additional Steam data (owned games, summaries) safely
+      let steamid;
+      try {
+        steamid = (steamProfile && steamProfile._json && steamProfile._json.steamid) || (steamProfile.identifier && (steamProfile.identifier.match(/(\d+)$/) || [])[1]);
+      } catch (e) { steamid = null; }
+      if (!steamid) {
+        console.error('Cannot determine steamid from profile', steamProfile);
+        return res.status(400).send('Cannot determine steamid');
+      }
+
+      let player = null;
+      let gamesArr = [];
+      try {
+        const psR = await fetch(`https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key=${STEAM_KEY}&steamids=${encodeURIComponent(steamid)}`);
+        const ps = await psR.json();
+        player = ps.response.players && ps.response.players[0];
+      } catch (e) {
+        console.error('Failed to fetch player summaries', e);
+      }
+      try {
+        const ogR = await fetch(`https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?key=${STEAM_KEY}&steamid=${encodeURIComponent(steamid)}&include_appinfo=1&include_played_free_games=1`);
+        const og = await ogR.json();
+        gamesArr = (og.response && og.response.games) || [];
+      } catch (e) {
+        console.error('Failed to fetch owned games', e);
+      }
+
       const games = {};
       let totalMinutes = 0;
       gamesArr.forEach(g => { totalMinutes += (g.playtime_forever || 0); games[g.appid] = { appid: g.appid, name: g.name, playtime: g.playtime_forever || 0, playtime_hours: Math.round((g.playtime_forever||0)/60) }; });
@@ -104,16 +146,20 @@ app.get('/auth/steam/return',
         const achRes = await fetch(`https://api.steampowered.com/ISteamUserStats/GetUserStatsForGame/v2/?key=${STEAM_KEY}&steamid=${steamid}&appid=730`);
         const achJson = await achRes.json();
         if (achJson.playerstats && !achJson.playerstats.error) hasPrime = true;
-      } catch (e) {}
+      } catch (e) { console.error('Failed to fetch achievements/stats', e); }
 
       const steamInfo = { steamId: steamid, persona: player?.personaname || null, avatar: player?.avatarfull || player?.avatar || null, games, totalHours, timecreated, cs_hours, hasPrime, fetchedAt: Date.now() };
 
-      const db = admin.firestore();
-      await db.collection('users').doc(uid).set({ steam: steamInfo }, { merge: true });
+      try {
+        const db = admin.firestore();
+        await db.collection('users').doc(uid).set({ steam: steamInfo }, { merge: true });
+      } catch (e) {
+        console.error('Failed to write to firestore', e);
+      }
 
       return res.send('<html><body><script>window.opener && window.opener.postMessage({ type: "steam-linked", steam: ' + JSON.stringify(steamInfo) + ' }, "*"); window.close();</script>Linked. You can close this window.</body></html>');
     } catch (err) {
-      console.error(err);
+      console.error('Unhandled error in steam return', err);
       return res.status(500).send('Server error');
     }
   }
