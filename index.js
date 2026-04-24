@@ -21,6 +21,20 @@ const sessionOptions = {
 };
 app.use(session(sessionOptions));
 
+// Store incoming Firebase ID token in session to associate with upcoming OpenID flow
+app.post('/initLink', async (req, res) => {
+  try {
+    const { idToken } = req.body || {};
+    if (!idToken) return res.status(400).send('No token');
+    // Save token in session for later use in OpenID callback
+    req.session.firebaseToken = idToken;
+    return res.status(200).send('OK');
+  } catch (err) {
+    console.error(err);
+    return res.status(500).send('Internal Server Error');
+  }
+});
+
 const STEAM_KEY = process.env.STEAM_API_KEY;
 if (!STEAM_KEY) console.warn('Warning: STEAM_API_KEY is not set in environment. Proxy will return errors for Steam API calls.');
 
