@@ -94,8 +94,8 @@ app.get('/auth/steam/return',
       }
 
       // verify firebase token to get uid
-      if (!admin) {
-        console.error('Firebase admin not configured');
+      if (!admin || !admin.apps || !admin.apps.length) {
+        console.error('Firebase admin not configured or not initialized');
         return res.status(500).send('Server not configured');
       }
       let decoded;
@@ -165,18 +165,6 @@ app.get('/auth/steam/return',
   }
 );
 
-const STEAM_KEY = process.env.STEAM_API_KEY;
-if (!STEAM_KEY) console.warn('Warning: STEAM_API_KEY is not set in environment. Proxy will return errors for Steam API calls.');
-
-// Optional: initialize Firebase Admin to update user documents from server-side if needed
-let admin;
-try {
-  admin = require('firebase-admin');
-  if (!admin.apps.length && process.env.FIREBASE_SERVICE_ACCOUNT) {
-    const sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    admin.initializeApp({ credential: admin.credential.cert(sa) });
-  }
-} catch (e) { /* not configured */ }
 
 app.get('/resolveVanity', async (req, res) => {
   const { vanity } = req.query;
